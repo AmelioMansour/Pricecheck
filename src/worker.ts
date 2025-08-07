@@ -1,0 +1,1 @@
+// worker.ts content placeholder

@@ -1,0 +1,1 @@
+// ebay.ts content placeholder
