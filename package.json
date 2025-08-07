@@ -16,12 +16,12 @@
     "discord.js": "^14.15.3",
     "dotenv": "^16.4.5",
     "ioredis": "^5.4.1",
-    "pino": "^9.2.0"
+    "pino": "^9.2.0",
+    "concurrently": "^8.2.2",
+    "tsx": "^4.15.7"
   },
   "devDependencies": {
     "@types/node": "^22.1.0",
-    "concurrently": "^8.2.2",
-    "tsx": "^4.15.7",
     "typescript": "^5.5.4"
   }
 }
