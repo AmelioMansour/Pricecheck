@@ -1,6 +1,9 @@
 import axios, { AxiosRequestConfig, AxiosResponse } from 'axios';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import { ProxyManager, proxyToUrl } from './proxymanager.js';
+import pino from 'pino';
+
+const log = pino({ level: 'info' });
 
 const UA_POOL = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -18,81 +21,95 @@ function sleep(ms: number) {
 
 let pm: ProxyManager | undefined;
 
-/** Initialize global proxy manager lazily to avoid startup cost if unused. */
-function ensurePM(): ProxyManager | undefined {
-  if (process.env.USE_PROXIES !== '1') return undefined;
-  if (!pm) {
-    const file = process.env.PROXY_FILE || 'proxies.txt';
-    pm = new ProxyManager(file);
+/** Initialize proxy manager */
+export function initProxyManager() {
+  if (process.env.PROXY_LIST) {
+    pm = new ProxyManager(process.env.PROXY_LIST.split(',').map(s => s.trim()));
   }
-  return pm;
 }
 
-export type FetchOpts = {
-  maxRetries?: number;        // default 4 (=> 5 attempts)
-  timeoutMs?: number;         // default 12s
-  validateStatus?: (code: number) => boolean; // default 2xx
-  headers?: Record<string, string>;
-};
-
+/** Fetch HTML with rotation and retries - OPTIMIZED FOR SPEED */
 export async function fetchHtmlWithRotation(
   url: string,
-  axiosConfig: AxiosRequestConfig = {},
-  opts: FetchOpts = {}
-): Promise<AxiosResponse<string>> {
-  const manager = ensurePM();
+  opts: AxiosRequestConfig = {},
+  config: {
+    maxRetries?: number;
+    timeoutMs?: number;
+    useProxies?: boolean;
+    validateStatus?: (status: number) => boolean;
+  } = {}
+): Promise<AxiosResponse | null> {
+  const {
+    maxRetries = 2, // Reduced from 4
+    timeoutMs = 5000, // Reduced from 12000
+    useProxies = false, // Disabled by default for speed
+    validateStatus = (c) => c >= 200 && c < 300,
+  } = config;
 
-  const maxRetries = opts.maxRetries ?? 4;
-  const timeoutMs = opts.timeoutMs ?? 12_000;
-  const validate = opts.validateStatus ?? ((c: number) => c >= 200 && c < 300);
+  log.info({ url, maxRetries, timeoutMs, useProxies }, 'Starting HTTP request');
 
-  let lastErr: any;
-
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    const state = manager?.nextHealthy() || null;
-    const agent = state ? new HttpsProxyAgent(proxyToUrl(state.proxy)) : undefined;
-
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      const res = await axios.request<string>({
-        url,
-        method: 'GET',
+      const proxy = useProxies && pm ? pm.getProxy() : null;
+      const proxyUrl = proxy ? proxyToUrl(proxy) : null;
+      
+      log.info({ attempt, maxRetries, usingProxy: !!proxy }, 'Making HTTP request attempt');
+
+      const config: AxiosRequestConfig = {
         timeout: timeoutMs,
-        maxRedirects: 5,
-        decompress: true,
         headers: {
-          'user-agent': ua(),
-          'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-          'accept-language': 'en-US,en;q=0.9',
-          'cache-control': 'no-cache',
-          pragma: 'no-cache',
-          ...opts.headers,
-          ...axiosConfig.headers,
+          'User-Agent': ua(),
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.5',
+          'Accept-Encoding': 'gzip, deflate',
+          'Connection': 'keep-alive',
+          'Upgrade-Insecure-Requests': '1',
         },
-        ...axiosConfig,
-        httpAgent: (axiosConfig as any).httpAgent ?? agent,
-        httpsAgent: (axiosConfig as any).httpsAgent ?? agent,
-        validateStatus: () => true, // manual check below
-      });
+        validateStatus,
+        ...opts,
+      };
 
-      if (validate(res.status)) {
-        state && manager?.markSuccess(state);
-        return res;
+      if (proxyUrl) {
+        config.httpsAgent = new HttpsProxyAgent(proxyUrl);
+        config.proxy = false;
       }
 
-      // Treat 403/412/429 as hard-ish failures to rotate/quarantine
-      if (state && [403, 412, 429, 503, 520, 521].includes(res.status)) {
-        manager?.markFailure(state, attempt);
+      const startTime = Date.now();
+      const response = await axios.get(url, config);
+      const duration = Date.now() - startTime;
+
+      log.info({ 
+        url, 
+        status: response.status, 
+        contentLength: response.data?.length || 0,
+        duration,
+        attempt 
+      }, 'HTTP request completed');
+
+      return response;
+
+    } catch (error: any) {
+      const isLastAttempt = attempt === maxRetries;
+      const errorMsg = error.code || error.message || 'Unknown error';
+      
+      log.error({ 
+        url, 
+        error: errorMsg, 
+        attempt, 
+        isLastAttempt 
+      }, 'HTTP request failed with error');
+
+      if (isLastAttempt) {
+        log.error({ url, lastError: errorMsg }, 'All HTTP request attempts failed');
+        return null;
       }
-      lastErr = new Error(`HTTP ${res.status}`);
-    } catch (e: any) {
-      if (state) manager?.markFailure(state, attempt);
-      lastErr = e;
+
+      // Shorter delays for speed
+      const delay = Math.min(1000 * attempt, 2000); // Max 2 second delay
+      log.info({ delay, attempt }, 'Waiting before retry');
+      await sleep(delay);
     }
-
-    // backoff with jitter
-    const delay = Math.min(2000 * 2 ** attempt, 12_000) + Math.floor(Math.random() * 400);
-    await sleep(delay);
   }
 
-  throw lastErr ?? new Error('fetchHtmlWithRotation failed');
+  return null;
 }
