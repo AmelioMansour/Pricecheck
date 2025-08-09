@@ -8,8 +8,10 @@ import { calcNet, ProfitInputs } from './lib/profit.js';
 import { postReply } from './lib/discord.js';
 
 const log = pino({ level: 'info' });
-const redis = new IORedis();
-
+const redis = new IORedis(process.env.REDIS_URL || 'redis://127.0.0.1:6379', {
+  maxRetriesPerRequest: null,
+  enableReadyCheck: false,
+});
 const MIN_PROFIT = Number(process.env.MIN_PROFIT_DOLLARS || 30);
 const MIN_SOLD30 = Number(process.env.MIN_SOLD_LAST_30 || 5);
 

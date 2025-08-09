@@ -1,6 +1,15 @@
-version: "3.9"
 services:
   redis:
     image: redis:7-alpine
     command: ["redis-server", "--save", "", "--appendonly", "no"]
     ports: ["6379:6379"]
+
+  bot:
+    image: node:20-alpine
+    working_dir: /app
+    volumes:
+      - ./:/app
+    command: sh -c "npm install && npx concurrently 'tsx src/worker.ts' 'tsx src/index.ts'"
+    env_file: .env
+    depends_on:
+      - redis

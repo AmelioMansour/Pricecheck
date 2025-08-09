@@ -6,7 +6,10 @@ import pino from 'pino';
 import { bindDiscordClient } from './lib/discord.js';
 
 const log = pino({ level: 'info' });
-const redis = new IORedis();
+const redis = new IORedis(process.env.REDIS_URL || 'redis://127.0.0.1:6379', {
+  maxRetriesPerRequest: null,
+  enableReadyCheck: false,
+}); 
 const priceQueue = new Queue('priceCheck', { connection: redis });
 
 const client = new Client({
@@ -44,7 +47,7 @@ client.on('messageCreate', async (msg: Message) => {
     if (wasSeen) return;
     await redis.setex(cacheKey, Number(process.env.CACHE_TTL_SECONDS || 21600), '1');
 
-    await msg.react('🧮').catch(() => {});
+    await msg.react('🧮').catch(() => { });
     await priceQueue.add('check', {
       url,
       channelId: msg.channel.id,
