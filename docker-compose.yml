@@ -9,6 +9,7 @@ services:
     working_dir: /app
     volumes:
       - ./:/app
+      - ./proxies.txt:/app/proxies.txt:ro
     command: sh -c "npm install && npx concurrently 'tsx src/worker.ts' 'tsx src/index.ts'"
     env_file: .env
     depends_on:
